@@ -6,6 +6,8 @@
     <!-- Camera + flashlight: torch (flashlight) control. -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.FLASHLIGHT" />
+    <!-- List installed apps so Ayra can open them by name ("Chrome kholo"). -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
     <uses-feature android:name="android.hardware.camera.flash" android:required="false" />
     <application
         android:label="ayra"
