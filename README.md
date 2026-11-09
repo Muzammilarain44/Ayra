@@ -29,6 +29,12 @@ More premium than TZ Nova's globe, built from code, not pictures.
 | `convert 5 km to miles` / `convert 100 c to f` | Unit converter |
 | `generate password` | Strong 16-character password |
 | `battery` / `torch on` / `torch off` | Battery level, flashlight (phone) |
+| `open Chrome` / `Chrome kholo` / `camera kholo` / `settings kholo` | Opens any installed app by name, camera, WiFi/Bluetooth/settings (Android) |
+| `set alarm 7 AM` / `7 baje ka alarm lagao` | Sets an alarm in the system clock app (Android) |
+| `volume up` / `volume kam karo` / `mute karo` / `unmute` | Media volume up/down, mute, unmute |
+| `coin toss karo` / `dice roll karo` | Coin toss, dice roll |
+| `stopwatch start karo` / `stopwatch band karo` | Stopwatch with spoken elapsed time |
+| `Ayra band karo` / `app band karo` | Closes Ayra itself (an app can only close itself) |
 | `call 03303094425` | Opens the dialer |
 | Windows only: `organize desktop`, `empty recycle bin`, `lock pc`, `shutdown pc` | Desktop actions — always asks for confirmation first |
 
@@ -38,6 +44,8 @@ language you used. Voice listening has an English / اردو switch.
 ## Honest limits
 
 - Ayra **cannot unlock a phone** — no app can, the OS forbids it.
+- Ayra **cannot close another app** — no app can, Android forbids it.
+  It can close itself on "Ayra band karo".
 - Ayra **cannot send a WhatsApp message by itself** — it opens WhatsApp, you send.
 - Ayra **does not run in the background** with the app closed.
 - **No free-form AI chat yet** — that needs a cloud API key, which costs money.
@@ -129,7 +137,9 @@ par install karo.
 GitHub Actions se **Build Windows** workflow se artifact download karo.
 
 **Ye nahi kar sakti:** Phone unlock nahi kar sakti (koi app nahi kar sakti),
-WhatsApp message khud nahi bhej sakti (WhatsApp khol deti hai, tum bhejo),
+kisi doosri app ko band nahi kar sakti (Android ye power kisi app ko nahi
+deta — khud band ho sakti hai, "Ayra band karo"), WhatsApp message khud nahi
+bhej sakti (WhatsApp khol deti hai, tum bhejo),
 app band ho to background mein nahi chalti. Free-form AI chat abhi nahi — us
 ke liye cloud key chahiye hogi; jab free key milegi to sirf
 `lib/ai_service.dart` mein lagayenge.
