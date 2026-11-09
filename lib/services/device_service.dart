@@ -1,17 +1,23 @@
 import 'dart:io';
 
+import 'package:android_intent_plus/android_intent.dart';
 import 'package:battery_plus/battery_plus.dart';
+import 'package:flutter/services.dart';
 import 'package:torch_light/torch_light.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:volume_controller/volume_controller.dart';
 
 /// The bridge between Ayra's rule engine and the real device.
 /// Every method is honest about what it can and cannot do:
 /// - Opening links, dialling and SMS work on Android and Windows.
 /// - Torch and battery work on Android (battery also on Windows).
+/// - Opening installed apps by name, camera, alarms and settings work
+///   on Android only (intents + package list, no API, no account).
+/// - Volume works wherever the device reports it.
 /// - Desktop organisation, Recycle Bin, lock and shutdown are Windows-only
 ///   and always need the user's confirmation in the UI first.
 /// - Nothing here can unlock a phone, send a WhatsApp message by itself,
-///   or run while the app is closed.
+///   close another app, or run while the app is closed.
 class DeviceService {
   final Battery _battery = Battery();
 
@@ -51,6 +57,118 @@ class DeviceService {
   }
 
   bool get isWindows => Platform.isWindows;
+
+  static const _appsChannel = MethodChannel('ayra/apps');
+
+  /// Opens an installed app by its spoken name ("Chrome kholo").
+  /// Android only. The native side (MainActivity) asks Android's own
+  /// PackageManager — no plugin, no API. Returns false when not found.
+  Future<bool> openAppByName(String query) async {
+    if (!Platform.isAndroid) return false;
+    final q = query.trim().toLowerCase();
+    if (q.length < 3 || q == 'app') return false;
+    try {
+      final result = await _appsChannel.invokeMethod<bool>(
+        'openAppByName',
+        {'query': q},
+      );
+      return result ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Opens the camera app. Android only.
+  Future<bool> openCamera() async {
+    if (!Platform.isAndroid) return false;
+    try {
+      const intent =
+          AndroidIntent(action: 'android.media.action.IMAGE_CAPTURE');
+      await intent.launch();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Sets an alarm in the system clock app. Android only.
+  Future<bool> setAlarm(int hour, int minute, String label) async {
+    if (!Platform.isAndroid) return false;
+    try {
+      final intent = AndroidIntent(
+        action: 'android.intent.action.SET_ALARM',
+        arguments: <String, dynamic>{
+          'android.intent.extra.alarm.HOUR': hour,
+          'android.intent.extra.alarm.MINUTES': minute,
+          'android.intent.extra.alarm.MESSAGE': label,
+          'android.intent.extra.alarm.SKIP_UI': false,
+        },
+      );
+      await intent.launch();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Opens WiFi, Bluetooth or general settings. Android only.
+  Future<bool> openSettings(String which) async {
+    if (!Platform.isAndroid) return false;
+    final action = switch (which) {
+      'wifi' => 'android.settings.WIFI_SETTINGS',
+      'bluetooth' => 'android.settings.BLUETOOTH_SETTINGS',
+      _ => 'android.settings.SETTINGS',
+    };
+    try {
+      final intent = AndroidIntent(action: action);
+      await intent.launch();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Media volume up by one step. Returns false when unavailable.
+  Future<bool> volumeUp() async {
+    try {
+      final current = await VolumeController.instance.getVolume();
+      await VolumeController.instance.setVolume((current + 0.1).clamp(0.0, 1.0));
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Media volume down by one step. Returns false when unavailable.
+  Future<bool> volumeDown() async {
+    try {
+      final current = await VolumeController.instance.getVolume();
+      await VolumeController.instance.setVolume((current - 0.1).clamp(0.0, 1.0));
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Mutes the media volume. Returns false when unavailable.
+  Future<bool> volumeMute() async {
+    try {
+      await VolumeController.instance.setMute(true);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Unmutes the media volume. Returns false when unavailable.
+  Future<bool> volumeUnmute() async {
+    try {
+      await VolumeController.instance.setMute(false);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
 
   /// Moves loose files on the Windows Desktop into folders by type
   /// (Images, Documents, Videos, Music, Archives, Apps, Other).
