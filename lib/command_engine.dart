@@ -29,6 +29,19 @@ enum CommandAction {
   battery,
   torchOn,
   torchOff,
+  openApp,
+  openCamera,
+  setAlarm,
+  openSettings,
+  volumeUp,
+  volumeDown,
+  volumeMute,
+  volumeUnmute,
+  coinToss,
+  diceRoll,
+  stopwatchStart,
+  stopwatchStop,
+  closeApp,
   windowsOrganize,
   windowsRecycleBin,
   windowsShutdown,
@@ -115,9 +128,9 @@ class CommandEngine {
       return CommandResult(
         action: CommandAction.help,
         reply: t(
-          "I can open sites (YouTube, Google, GitHub, WhatsApp), tell the time and date, calculate, keep notes, remember things, set timers, tell jokes, convert units, make passwords, check battery, and on Windows organise the desktop, empty the Recycle Bin, lock or shut down the PC. Try 'open YouTube' or 'calculate 15 * 4'.",
-          "Main sites khol sakti hun (YouTube, Google, GitHub, WhatsApp), time aur date bata sakti hun, hisaab kar sakti hun, notes rakh sakti hun, cheezein yaad rakh sakti hun, timer laga sakti hun, jokes suna sakti hun, units convert kar sakti hun, password bana sakti hun, battery check kar sakti hun, aur Windows par desktop organize, Recycle Bin khali, PC lock ya shutdown kar sakti hun. Try karo: 'YouTube kholo' ya '15 * 4 calculate karo'.",
-          "میں سائٹس کھول سکتی ہوں (یوٹیوب، گوگل، گٹ ہب، واٹس ایپ)، وقت اور تاریخ بتا سکتی ہوں، حساب کر سکتی ہوں، نوٹس رکھ سکتی ہوں، چیزیں یاد رکھ سکتی ہوں، ٹائمر لگا سکتی ہوں، لطیفے سنا سکتی ہوں، یونٹس تبدیل کر سکتی ہوں، پاس ورڈ بنا سکتی ہوں، بیٹری چیک کر سکتی ہوں، اور ونڈوز پر ڈیسک ٹاپ ترتیب دے سکتی ہوں، ری سائیکل بن خالی کر سکتی ہوں، پی سی لاک یا بند کر سکتی ہوں۔ آزمائیں: 'یوٹیوب کھولو' یا '15 * 4 حساب کرو'۔",
+          "I can open sites (YouTube, Google, GitHub, WhatsApp), tell the time and date, calculate, keep notes, remember things, set timers, tell jokes, convert units, make passwords, check battery, and on Windows organise the desktop, empty the Recycle Bin, lock or shut down the PC. I can also open any installed app by name, open the camera, set alarms, open WiFi or Bluetooth settings, change the volume, toss a coin, roll dice, run a stopwatch, and close myself. Try 'open Chrome' or 'set alarm 7 AM'.",
+          "Main sites khol sakti hun (YouTube, Google, GitHub, WhatsApp), time aur date bata sakti hun, hisaab kar sakti hun, notes rakh sakti hun, cheezein yaad rakh sakti hun, timer laga sakti hun, jokes suna sakti hun, units convert kar sakti hun, password bana sakti hun, battery check kar sakti hun, aur Windows par desktop organize, Recycle Bin khali, PC lock ya shutdown kar sakti hun. Main kisi bhi installed app ko naam se khol sakti hun, camera khol sakti hun, alarm laga sakti hun, WiFi ya Bluetooth settings khol sakti hun, volume badal sakti hun, sikka uchal sakti hun, pansa phenk sakti hun, stopwatch chala sakti hun, aur khud band ho sakti hun. Try karo: 'Chrome kholo' ya '7 baje ka alarm lagao'.",
+          "میں سائٹس کھول سکتی ہوں (یوٹیوب، گوگل، گٹ ہب، واٹس ایپ)، وقت اور تاریخ بتا سکتی ہوں، حساب کر سکتی ہوں، نوٹس رکھ سکتی ہوں، چیزیں یاد رکھ سکتی ہوں، ٹائمر لگا سکتی ہوں، لطیفے سنا سکتی ہوں، یونٹس تبدیل کر سکتی ہوں، پاس ورڈ بنا سکتی ہوں، بیٹری چیک کر سکتی ہوں، اور ونڈوز پر ڈیسک ٹاپ ترتیب دے سکتی ہوں، ری سائیکل بن خالی کر سکتی ہوں، پی سی لاک یا بند کر سکتی ہوں۔ میں کسی بھی انسٹال شدہ ایپ کو نام سے کھول سکتی ہوں، کیمرہ کھول سکتی ہوں، الارم لگا سکتی ہوں، وائی فائی یا بلوٹوتھ سیٹنگز کھول سکتی ہوں، آواز بدل سکتی ہوں، سکہ اچھال سکتی ہوں، پانسہ پھینک سکتی ہوں، سٹاپ واچ چلا سکتی ہوں، اور خود بند ہو سکتی ہوں۔ آزمائیں: 'کروم کھولو' یا '7 بجے کا الارم لگاؤ'۔",
         ),
         language: lang,
       );
@@ -142,7 +155,7 @@ class CommandEngine {
     // ---- Time & date ----
     if ((_hasWord(norm, 'time') ||
             _containsAny(norm, ['waqt', 'baj', 'وقت', 'بج'])) &&
-        !_containsAny(norm, ['timer'])) {
+        !_containsAny(norm, ['timer', 'alarm', 'الارم'])) {
       return CommandResult(
         action: CommandAction.tellTime,
         reply: t(
@@ -180,6 +193,25 @@ class CommandEngine {
           'Timer set for $human${label.isEmpty ? '' : ' — $label'}.',
           '$human ka timer laga diya${label.isEmpty ? '' : ' — $label'}.',
           '$human کا ٹائمر لگا دیا گیا${label.isEmpty ? '' : ' — $label'}۔',
+        ),
+        language: lang,
+      );
+    }
+
+    // ---- Alarm (opens the system clock's alarm screen) ----
+    final alarm = _parseAlarm(norm);
+    if (alarm != null) {
+      final hour = alarm.$1;
+      final minute = alarm.$2;
+      final label = alarm.$3;
+      final hm = _formatTime(DateTime(2026, 1, 1, hour, minute));
+      return CommandResult(
+        action: CommandAction.setAlarm,
+        data: '$hour|$minute|$label',
+        reply: t(
+          'Setting an alarm for $hm.',
+          '$hm ka alarm laga rahi hun.',
+          '$hm کا الارم لگا رہی ہوں۔',
         ),
         language: lang,
       );
@@ -246,6 +278,131 @@ class CommandEngine {
       return CommandResult(
         action: CommandAction.torchOff,
         reply: t('Torch off.', 'Torch band kar di.', 'ٹارچ بند کر دی۔'),
+        language: lang,
+      );
+    }
+
+    // ---- Volume (unmute first: "unmute" contains "mute") ----
+    if (_containsAny(norm, [
+      'volume up', 'volume zyada', 'volume badhao', 'awaz barhao',
+      'awaz zyada', 'sound up', 'آواز بڑھاؤ',
+    ])) {
+      return CommandResult(
+        action: CommandAction.volumeUp,
+        reply: t('Volume up.', 'Volume barha di.', 'آواز بڑھا دی۔'),
+        language: lang,
+      );
+    }
+    if (_containsAny(norm, [
+      'volume down', 'volume kam', 'volume ghatao', 'awaz kam',
+      'sound down', 'آواز کم',
+    ])) {
+      return CommandResult(
+        action: CommandAction.volumeDown,
+        reply: t('Volume down.', 'Volume kam kar di.', 'آواز کم کر دی۔'),
+        language: lang,
+      );
+    }
+    if (_containsAny(norm, ['unmute', 'awaz kholo', 'sound on'])) {
+      return CommandResult(
+        action: CommandAction.volumeUnmute,
+        reply: t('Unmuted.', 'Awaz khol di.', 'آواز کھول دی۔'),
+        language: lang,
+      );
+    }
+    if (_containsAny(norm, [
+      'volume mute', 'mute karo', 'mute', 'awaz band', 'sound band',
+      'آواز بند',
+    ])) {
+      return CommandResult(
+        action: CommandAction.volumeMute,
+        reply: t('Muted.', 'Awaz band kar di.', 'آواز بند کر دی۔'),
+        language: lang,
+      );
+    }
+
+    // ---- Coin toss & dice (pure chance, no API) ----
+    if (_containsAny(norm, [
+      'coin toss', 'sikka', 'heads or tails', 'toss karo', 'سکہ',
+    ])) {
+      final heads = _random.nextBool();
+      return CommandResult(
+        action: CommandAction.coinToss,
+        reply: t(
+          heads ? 'Heads.' : 'Tails.',
+          heads ? 'Chit.' : 'Pat.',
+          heads ? 'چت۔' : 'پٹ۔',
+        ),
+        language: lang,
+      );
+    }
+    if (_containsAny(norm, [
+      'dice', 'pansa', 'پانسہ', 'roll a dice', 'dice roll',
+    ])) {
+      final roll = _random.nextInt(6) + 1;
+      return CommandResult(
+        action: CommandAction.diceRoll,
+        reply: t(
+          'You rolled a $roll.',
+          'Pansa $roll aaya.',
+          'پانسہ $roll آیا۔',
+        ),
+        language: lang,
+      );
+    }
+
+    // ---- Stopwatch ----
+    if (norm.contains('stopwatch') || norm.contains('سٹاپ واچ')) {
+      if (_containsAny(norm, ['start', 'shuru', 'chalu', 'شروع'])) {
+        _stopwatchStart = time;
+        return CommandResult(
+          action: CommandAction.stopwatchStart,
+          reply: t(
+            'Stopwatch started.',
+            'Stopwatch shuru kar di.',
+            'سٹاپ واچ شروع کر دی۔',
+          ),
+          language: lang,
+        );
+      }
+      if (_containsAny(norm, ['stop', 'band', 'ruk', 'بند'])) {
+        if (_stopwatchStart == null) {
+          return CommandResult(
+            action: CommandAction.stopwatchStop,
+            reply: t(
+              'The stopwatch is not running.',
+              'Stopwatch abhi chal nahi rahi.',
+              'سٹاپ واچ ابھی چل نہیں رہی۔',
+            ),
+            language: lang,
+          );
+        }
+        final elapsed = time.difference(_stopwatchStart!).inSeconds;
+        _stopwatchStart = null;
+        final pretty = _formatElapsed(elapsed, lang);
+        return CommandResult(
+          action: CommandAction.stopwatchStop,
+          reply: t(
+            'Stopwatch stopped: $pretty.',
+            'Stopwatch band: $pretty.',
+            'سٹاپ واچ بند: $pretty۔',
+          ),
+          language: lang,
+        );
+      }
+    }
+
+    // ---- Close Ayra itself (an app can only close itself) ----
+    if ((_containsAny(norm, ['ayra', 'ایرا']) &&
+            _containsAny(norm, ['band', 'close', 'minimize', 'بند'])) ||
+        _containsAny(norm, ['app band', 'exit app', 'close app', 'minimize'])) {
+      return CommandResult(
+        action: CommandAction.closeApp,
+        reply: t(
+          'Closing Ayra. Allah Hafiz!',
+          'Ayra band kar rahi hun. Allah Hafiz!',
+          'ایرا بند کر رہی ہوں۔ اللہ حافظ!',
+        ),
         language: lang,
       );
     }
@@ -364,6 +521,69 @@ class CommandEngine {
       );
     }
 
+    // ---- Open any installed app by name ("Chrome kholo") ----
+    final appName = _parseOpenApp(norm, input);
+    if (appName != null) {
+      final lowerApp = appName.toLowerCase();
+      if (lowerApp.contains('camera') || lowerApp.contains('کیمرہ')) {
+        return CommandResult(
+          action: CommandAction.openCamera,
+          reply: t(
+            'Opening camera…',
+            'Camera khol rahi hun…',
+            'کیمرہ کھول رہی ہوں…',
+          ),
+          language: lang,
+        );
+      }
+      if (lowerApp.contains('wifi') || lowerApp.contains('wi-fi')) {
+        return CommandResult(
+          action: CommandAction.openSettings,
+          data: 'wifi',
+          reply: t(
+            'Opening WiFi settings…',
+            'WiFi settings khol rahi hun…',
+            'وائی فائی سیٹنگز کھول رہی ہوں…',
+          ),
+          language: lang,
+        );
+      }
+      if (lowerApp.contains('bluetooth')) {
+        return CommandResult(
+          action: CommandAction.openSettings,
+          data: 'bluetooth',
+          reply: t(
+            'Opening Bluetooth settings…',
+            'Bluetooth settings khol rahi hun…',
+            'بلوٹوتھ سیٹنگز کھول رہی ہوں…',
+          ),
+          language: lang,
+        );
+      }
+      if (lowerApp.contains('setting')) {
+        return CommandResult(
+          action: CommandAction.openSettings,
+          data: 'settings',
+          reply: t(
+            'Opening settings…',
+            'Settings khol rahi hun…',
+            'سیٹنگز کھول رہی ہوں…',
+          ),
+          language: lang,
+        );
+      }
+      return CommandResult(
+        action: CommandAction.openApp,
+        data: appName,
+        reply: t(
+          'Opening $appName…',
+          '$appName khol rahi hun…',
+          '$appName کھول رہی ہوں…',
+        ),
+        language: lang,
+      );
+    }
+
     // ---- Notes ----
     if (_containsAny(norm, ['show notes', 'show my notes', 'notes dikhao',
       'mere notes', 'my notes', 'نوٹ دکھاؤ', 'میرے نوٹ'])) {
@@ -462,6 +682,9 @@ class CommandEngine {
 
   final _random = Random.secure();
 
+  /// When the stopwatch was started, if it is running.
+  DateTime? _stopwatchStart;
+
   static String _detectLanguage(String input) {
     if (RegExp(r'[\u0600-\u06FF]').hasMatch(input)) return 'ur';
     final lower = input.toLowerCase();
@@ -554,6 +777,58 @@ class CommandEngine {
         RegExp(r'\bke\s+(.+)$', caseSensitive: false).firstMatch(original);
     if (toMatch != null) label = toMatch.group(1)!.trim();
     return (seconds, label);
+  }
+
+  /// Parses "set alarm 7 AM", "alarm 6:30 PM", "7 baje ka alarm lagao".
+  /// Returns (hour 0-23, minute, label).
+  static (int, int, String)? _parseAlarm(String norm) {
+    if (!norm.contains('alarm') && !norm.contains('الارم')) return null;
+    final match = RegExp(
+      r'(\d{1,2})(?::(\d{2}))?\s*(am|pm|baje|bajay)?',
+    ).firstMatch(norm);
+    if (match == null) return null;
+    var hour = int.parse(match.group(1)!);
+    final minute = match.group(2) == null ? 0 : int.parse(match.group(2)!);
+    final suffix = match.group(3);
+    if (suffix == 'pm' && hour < 12) hour += 12;
+    if (suffix == 'am' && hour == 12) hour = 0;
+    if (hour > 23 || minute > 59) return null;
+    return (hour, minute, '');
+  }
+
+  /// The app name after "open ..." / "... kholo".
+  static String? _parseOpenApp(String norm, String original) {
+    var match = RegExp(
+      r'^(?:open|launch|start)\s+(.+)$',
+      caseSensitive: false,
+    ).firstMatch(original.trim());
+    if (match != null) {
+      final name = match.group(1)!.trim();
+      if (name.isNotEmpty) return name;
+    }
+    match = RegExp(
+      r'^(.+?)\s+(?:kholo|khol|کھولو|کھول)\s*$',
+      caseSensitive: false,
+    ).firstMatch(original.trim());
+    if (match != null) {
+      final name = match.group(1)!.trim();
+      if (name.isNotEmpty) return name;
+    }
+    return null;
+  }
+
+  static String _formatElapsed(int seconds, String lang) {
+    if (seconds < 60) {
+      if (lang == 'ur') return '$seconds سیکنڈ';
+      return '$seconds second${seconds == 1 ? '' : 's'}';
+    }
+    final minutes = seconds ~/ 60;
+    final rest = seconds % 60;
+    if (lang == 'ur') {
+      return rest == 0 ? '$minutes منٹ' : '$minutes منٹ $rest سیکنڈ';
+    }
+    final m = '$minutes minute${minutes == 1 ? '' : 's'}';
+    return rest == 0 ? m : '$m $rest second${rest == 1 ? '' : 's'}';
   }
 
   /// Finds an arithmetic expression inside the text, if any.

@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'command_engine.dart';
 import 'memory_store.dart';
@@ -98,6 +99,7 @@ class _HomePageState extends State<HomePage> {
   final List<_Exchange> _history = [];
   Timer? _timer;
   String _timerLabel = '';
+  bool _closeAfterReply = false;
 
   @override
   void initState() {
@@ -189,6 +191,45 @@ class _HomePageState extends State<HomePage> {
         final ok = await _device.torchOff();
         if (!ok) reply = 'Torch is not available on this device.';
         break;
+      case CommandAction.openApp:
+        final ok = await _device.openAppByName(result.data ?? '');
+        if (!ok) reply = 'Could not find or open that app on this device.';
+        break;
+      case CommandAction.openCamera:
+        final ok = await _device.openCamera();
+        if (!ok) reply = 'Camera could not be opened on this device.';
+        break;
+      case CommandAction.setAlarm:
+        final parts = (result.data ?? '').split('|');
+        final hour = int.tryParse(parts.isEmpty ? '' : parts[0]) ?? 0;
+        final minute = int.tryParse(parts.length > 1 ? parts[1] : '') ?? 0;
+        final label = parts.length > 2 ? parts[2] : '';
+        final ok = await _device.setAlarm(hour, minute, label);
+        if (!ok) reply = 'Could not set the alarm on this device.';
+        break;
+      case CommandAction.openSettings:
+        final ok = await _device.openSettings(result.data ?? 'settings');
+        if (!ok) reply = 'Could not open settings on this device.';
+        break;
+      case CommandAction.volumeUp:
+        final ok = await _device.volumeUp();
+        if (!ok) reply = 'Volume control is not available on this device.';
+        break;
+      case CommandAction.volumeDown:
+        final ok = await _device.volumeDown();
+        if (!ok) reply = 'Volume control is not available on this device.';
+        break;
+      case CommandAction.volumeMute:
+        final ok = await _device.volumeMute();
+        if (!ok) reply = 'Volume control is not available on this device.';
+        break;
+      case CommandAction.volumeUnmute:
+        final ok = await _device.volumeUnmute();
+        if (!ok) reply = 'Volume control is not available on this device.';
+        break;
+      case CommandAction.closeApp:
+        _closeAfterReply = true;
+        break;
       case CommandAction.windowsOrganize:
       case CommandAction.windowsRecycleBin:
       case CommandAction.windowsShutdown:
@@ -216,6 +257,10 @@ class _HomePageState extends State<HomePage> {
     });
     if (_speakReplies) {
       await _voice.speak(reply, result.language);
+    }
+    if (_closeAfterReply) {
+      _closeAfterReply = false;
+      SystemNavigator.pop();
     }
   }
 
@@ -464,6 +509,8 @@ class _HomePageState extends State<HomePage> {
       ('Joke', 'tell me a joke', Icons.emoji_emotions),
       ('Notes', 'show my notes', Icons.note_alt),
       ('Battery', 'battery', Icons.battery_std),
+      ('Camera', 'open camera', Icons.camera_alt),
+      ('Alarm', 'set alarm 7 AM', Icons.alarm),
     ];
     return Wrap(
       spacing: 8,
