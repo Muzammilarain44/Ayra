@@ -14,7 +14,10 @@ void main() {
 
     expect(find.text('AYRA'), findsOneWidget);
     expect(find.text('Tap to speak'), findsOneWidget);
-    expect(find.text('Type a command… e.g. calculate 15 * 4'), findsOneWidget);
+    expect(
+      find.text('Command likho… jaise "12 + 8 calculate karo"'),
+      findsOneWidget,
+    );
   });
 
   testWidgets('Typing a command shows Ayra\'s reply',

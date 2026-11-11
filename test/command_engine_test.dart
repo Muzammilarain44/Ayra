@@ -43,11 +43,12 @@ void main() {
       final result = engine.handle('what is this');
       expect(result.action, isNot(CommandAction.greeting));
     });
-    test('opens YouTube', () {
+    test('opens YouTube app, website as fallback', () {
       final engine = CommandEngine();
       final result = engine.handle('open YouTube');
-      expect(result.action, CommandAction.openSite);
-      expect(result.data, 'https://www.youtube.com');
+      expect(result.action, CommandAction.openApp);
+      expect(result.data, 'YouTube');
+      expect(result.fallbackUrl, 'https://www.youtube.com');
     });
     test('searches YouTube', () {
       final engine = CommandEngine();
@@ -161,11 +162,34 @@ void main() {
   });
 
   group('CommandEngine — Roman Urdu', () {
-    test('opens YouTube in Roman Urdu', () {
+    test('opens YouTube app in Roman Urdu', () {
       final engine = CommandEngine();
       final result = engine.handle('YouTube kholo');
-      expect(result.action, CommandAction.openSite);
+      expect(result.action, CommandAction.openApp);
+      expect(result.fallbackUrl, 'https://www.youtube.com');
       expect(result.language, 'roman');
+    });
+
+    test('"WhatsApp kholo" opens the app, not WhatsApp Web', () {
+      final engine = CommandEngine();
+      final result = engine.handle('WhatsApp kholo');
+      expect(result.action, CommandAction.openApp);
+      expect(result.data, 'WhatsApp');
+      expect(result.fallbackUrl, 'https://web.whatsapp.com');
+    });
+
+    test('a bare site name still opens the website', () {
+      final engine = CommandEngine();
+      final result = engine.handle('youtube');
+      expect(result.action, CommandAction.openSite);
+      expect(result.data, 'https://www.youtube.com');
+    });
+
+    test('"WhatsApp web" explicitly opens the website', () {
+      final engine = CommandEngine();
+      final result = engine.handle('WhatsApp web kholo');
+      expect(result.action, CommandAction.openSite);
+      expect(result.data, 'https://web.whatsapp.com');
     });
     test('tells the time in Roman Urdu', () {
       final engine = CommandEngine();
@@ -255,10 +279,11 @@ void main() {
   });
 
   group('CommandEngine — Urdu script', () {
-    test('opens YouTube in Urdu script', () {
+    test('opens YouTube app in Urdu script', () {
       final engine = CommandEngine();
       final result = engine.handle('یوٹیوب کھولو');
-      expect(result.action, CommandAction.openSite);
+      expect(result.action, CommandAction.openApp);
+      expect(result.fallbackUrl, 'https://www.youtube.com');
       expect(result.language, 'ur');
     });
     test('tells the time in Urdu script', () {
@@ -276,6 +301,56 @@ void main() {
       expect(engine.memories['نام'], 'مزمل');
       final recall = engine.handle('میرا نام کیا ہے');
       expect(recall.reply, contains('مزمل'));
+    });
+  });
+
+  group('CommandEngine — recogniser mishearings', () {
+    test('fixes "colo" / "kolo" to "kholo"', () {
+      final engine = CommandEngine();
+      final result = engine.handle('colo youtube');
+      expect(result.action, CommandAction.openApp);
+      expect(result.data, 'youtube');
+      expect(result.fallbackUrl, 'https://www.youtube.com');
+    });
+
+    test('fixes "yutube" and "gogle"', () {
+      final engine = CommandEngine();
+      final yutube = engine.handle('yutube kholo');
+      expect(yutube.action, CommandAction.openApp);
+      expect(yutube.fallbackUrl, 'https://www.youtube.com');
+      final gogle = engine.handle('gogle kholo');
+      expect(gogle.action, CommandAction.openApp);
+      expect(gogle.fallbackUrl, 'https://www.google.com');
+    });
+
+    test('fixes "alaram" to "alarm"', () {
+      final engine = CommandEngine();
+      final result = engine.handle(
+        'alaram 7 baje lagao',
+        now: DateTime(2026, 11, 9, 18, 45),
+      );
+      expect(result.action, CommandAction.setAlarm);
+      expect(result.data, '7|0|');
+    });
+
+    test('fixes "watsapp" and "caro"', () {
+      final engine = CommandEngine();
+      final watsapp = engine.handle('watsapp kholo');
+      expect(watsapp.action, CommandAction.openApp);
+      expect(watsapp.fallbackUrl, 'https://web.whatsapp.com');
+      final colo = engine.handle('colo whatsapp');
+      expect(colo.action, CommandAction.openApp);
+      expect(colo.fallbackUrl, 'https://web.whatsapp.com');
+    });
+
+    test('does not corrupt real words', () {
+      final engine = CommandEngine();
+      // "note" must not become something else; "time" stays "time".
+      final result = engine.handle(
+        'what time is it',
+        now: DateTime(2026, 11, 9, 18, 45),
+      );
+      expect(result.action, CommandAction.tellTime);
     });
   });
 }
