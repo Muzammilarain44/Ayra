@@ -56,12 +56,17 @@ class CommandResult {
     required this.action,
     required this.reply,
     this.data,
+    this.fallbackUrl,
     required this.language,
   });
 
   final CommandAction action;
   final String reply;
   final String? data;
+
+  /// Website to open when the requested app is not installed
+  /// (for example web.whatsapp.com when WhatsApp is not installed).
+  final String? fallbackUrl;
 
   /// 'en', 'roman' (Roman Urdu) or 'ur' (Urdu script).
   final String language;
@@ -81,11 +86,13 @@ class CommandEngine {
   final List<String> notes;
 
   CommandResult handle(String rawInput, {DateTime? now}) {
-    final input = rawInput.trim();
+    // Fix recogniser mishearings first (case-aware: other words keep
+    // their case), so every parser below sees the corrected words.
+    final input = _fixMishearingsCaseAware(rawInput.trim());
     final time = now ?? DateTime.now();
     final lang = _detectLanguage(input);
     final lower = input.toLowerCase();
-    final norm = _normalise(lower);
+    final norm = _fixMishearings(_normalise(lower));
 
     String t(String en, String roman, String ur) {
       if (lang == 'ur') return ur;
@@ -506,22 +513,11 @@ class CommandEngine {
       );
     }
 
-    // ---- Open a site / app ----
-    final site = _matchSite(norm);
-    if (site != null) {
-      return CommandResult(
-        action: CommandAction.openSite,
-        data: site.$1,
-        reply: t(
-          'Opening ${site.$2}…',
-          '${site.$2} khol rahi hun…',
-          '${site.$2} کھول رہی ہوں…',
-        ),
-        language: lang,
-      );
-    }
-
     // ---- Open any installed app by name ("Chrome kholo") ----
+    // Installed apps win over websites: "WhatsApp kholo" must open the
+    // installed WhatsApp app, not web.whatsapp.com. The website is only
+    // a fallback (see fallbackUrl) for when the app is not installed —
+    // or when the user explicitly asks for the website ("WhatsApp web").
     final appName = _parseOpenApp(norm, input);
     if (appName != null) {
       final lowerApp = appName.toLowerCase();
@@ -572,13 +568,47 @@ class CommandEngine {
           language: lang,
         );
       }
+      final wantsWeb =
+          lowerApp.contains('web') || lowerApp.contains('website');
+      if (!wantsWeb) {
+        // A known website for this name? Keep it as the fallback for
+        // when the app is not installed (longest key first so
+        // "google maps" maps to Maps, not Google).
+        String? fallbackUrl;
+        final sites = _siteMap.entries.toList()
+          ..sort((a, b) => b.key.length.compareTo(a.key.length));
+        for (final entry in sites) {
+          if (lowerApp.contains(entry.key)) {
+            fallbackUrl = entry.value.$1;
+            break;
+          }
+        }
+        return CommandResult(
+          action: CommandAction.openApp,
+          data: appName,
+          fallbackUrl: fallbackUrl,
+          reply: t(
+            'Opening $appName…',
+            '$appName khol rahi hun…',
+            '$appName کھول رہی ہوں…',
+          ),
+          language: lang,
+        );
+      }
+    }
+
+    // ---- Open a site / app ----
+    // Reached only for a bare site name ("youtube") with no open/kholo,
+    // or when the user explicitly asked for the website ("WhatsApp web").
+    final site = _matchSite(norm);
+    if (site != null) {
       return CommandResult(
-        action: CommandAction.openApp,
-        data: appName,
+        action: CommandAction.openSite,
+        data: site.$1,
         reply: t(
-          'Opening $appName…',
-          '$appName khol rahi hun…',
-          '$appName کھول رہی ہوں…',
+          'Opening ${site.$2}…',
+          '${site.$2} khol rahi hun…',
+          '${site.$2} کھول رہی ہوں…',
         ),
         language: lang,
       );
@@ -702,6 +732,71 @@ class CommandEngine {
   static String _normalise(String lower) =>
       lower.replaceAll(RegExp(r'[؟?!.،,]+$'), '').trim();
 
+  /// Fixes the words the on-device recogniser commonly mangles when the
+  /// user speaks Roman Urdu with the English (en-US) locale — there is
+  /// no Roman Urdu locale, so "kholo" often arrives as "colo", "karo"
+  /// as "caro", and so on. Whole-word replacement only, so real words
+  /// are never corrupted.
+  static const _mishearings = <String, String>{
+    'colo': 'kholo',
+    'kolo': 'kholo',
+    'holo': 'kholo',
+    'kholow': 'kholo',
+    'caro': 'karo',
+    'kro': 'karo',
+    'karoo': 'karo',
+    'btao': 'batao',
+    'bta': 'bata',
+    'btayo': 'batao',
+    'tyme': 'time',
+    'taym': 'time',
+    'alaram': 'alarm',
+    'yutube': 'youtube',
+    'youtub': 'youtube',
+    'youtobe': 'youtube',
+    'gogle': 'google',
+    'gogal': 'google',
+    'watsapp': 'whatsapp',
+    'whatsap': 'whatsapp',
+    'watsap': 'whatsapp',
+    'camra': 'camera',
+    'cemra': 'camera',
+    'seting': 'setting',
+    'setings': 'settings',
+    'calculat': 'calculate',
+    'calcolate': 'calculate',
+    'jok': 'joke',
+    'tareek': 'tareekh',
+    'muje': 'mujhe',
+    'kia': 'kya',
+    'bajai': 'baje',
+  };
+
+  static String _fixMishearings(String text) {
+    var fixed = text;
+    for (final entry in _mishearings.entries) {
+      fixed = fixed.replaceAll(
+        RegExp('\\b${RegExp.escape(entry.key)}\\b'),
+        entry.value,
+      );
+    }
+    return fixed;
+  }
+
+  /// Same correction, but applied to the raw input while keeping the
+  /// case of every other word (so "open YouTube" keeps "YouTube").
+  /// Urdu-script words are untouched (they are not Latin letters).
+  static String _fixMishearingsCaseAware(String text) {
+    return text.splitMapJoin(
+      RegExp(r'[A-Za-z]+'),
+      onMatch: (m) {
+        final word = m.group(0)!;
+        return _mishearings[word.toLowerCase()] ?? word;
+      },
+      onNonMatch: (s) => s,
+    );
+  }
+
   static bool _containsAny(String text, List<String> needles) {
     for (final needle in needles) {
       if (text.contains(needle)) return true;
@@ -808,6 +903,15 @@ class CommandEngine {
     }
     match = RegExp(
       r'^(.+?)\s+(?:kholo|khol|کھولو|کھول)\s*$',
+      caseSensitive: false,
+    ).firstMatch(original.trim());
+    if (match != null) {
+      final name = match.group(1)!.trim();
+      if (name.isNotEmpty) return name;
+    }
+    // Roman Urdu, verb first: "kholo YouTube".
+    match = RegExp(
+      r'^(?:kholo|khol|کھولو|کھول)\s+(.+)$',
       caseSensitive: false,
     ).firstMatch(original.trim());
     if (match != null) {

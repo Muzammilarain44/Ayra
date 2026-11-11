@@ -1,17 +1,26 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'command_engine.dart';
 import 'memory_store.dart';
+import 'services/background_assistant.dart';
 import 'services/device_service.dart';
+import 'services/diagnostics_log.dart';
+import 'services/microphone_gate.dart';
 import 'services/voice_service.dart';
 import 'widgets/globe_3d.dart';
 import 'widgets/orb_3d.dart';
 import 'widgets/tilt_card.dart';
 
 void main() {
+  // Lets the foreground service talk to the UI isolate.
+  FlutterForegroundTask.initCommunicationPort();
   runApp(const AyraApp());
 }
 
@@ -92,27 +101,324 @@ class _HomePageState extends State<HomePage> {
 
   bool _listening = false;
   bool _speakReplies = true;
-  bool _listenUrdu = false;
+  // Urdu is the default from now on (the user's decision): the app
+  // opens in Urdu mode, listens in Urdu and answers in Urdu. English
+  // stays as the secondary option. The choice is saved so it
+  // survives a restart.
+  bool _listenUrdu = true;
+  static const _languageKey = 'ayra_listen_urdu';
+  // Speaking speed: Slow (0.55) is the default — the user asked for
+  // it slower than the old 0.7. Normal is 0.7.
+  bool _ttsSlow = true;
   String _heard = '';
   String _reply =
-      'Salam! Main Ayra hun. Tap the orb and speak, or type below.';
+      'Salam! Main Ayra hun. Bolo ya likho, kya karun?';
   final List<_Exchange> _history = [];
   Timer? _timer;
   String _timerLabel = '';
   bool _closeAfterReply = false;
 
+  // Background assistant (ON/OFF): foreground service + "Hello Ayra"
+  // trigger loop + floating mic button. OFF means Ayra does nothing.
+  final _assistant = BackgroundAssistantService();
+  bool _assistantOn = false;
+  bool _assistantBusy = false;
+  bool _overlayGranted = false;
+  bool _overlayRestricted = false;
+  bool _batteryWarning = false;
+  AppLifecycleListener? _lifecycleListener;
+
+  /// Last loop state reported by the background isolate
+  /// ("Listening…", "Loop failed: …", "Last heard: …") — shown in
+  /// the assistant card so a background failure is visible in the
+  /// app instead of silent.
+  String _loopState = '';
+
+  /// Heartbeat to the background isolate (every 5s while ON) so it
+  /// knows the UI isolate is alive and can route commands here.
+  Timer? _heartbeatTimer;
+
   @override
   void initState() {
     super.initState();
     _loadSaved();
+    FlutterForegroundTask.addTaskDataCallback(_onTaskData);
+    _initAssistant();
+    _lifecycleListener = AppLifecycleListener(
+      onResume: _onAppResumed,
+    );
+  }
+
+  /// Messages from the background isolate: a command to run here (ack
+  /// first so it does not also run there), a finished reply to show,
+  /// or a live partial transcript.
+  void _onTaskData(Object data) {
+    if (data is! Map) return;
+    if (!mounted) return;
+    switch (data['type']) {
+      case 'command':
+        final id = data['id'];
+        final text = data['text'];
+        if (id is int && text is String) {
+          BackgroundAssistantService.sendToTask({'type': 'ack', 'id': id});
+          _runCommand(text);
+        }
+      case 'display':
+        final heard = data['heard'];
+        final reply = data['reply'];
+        if (heard is String && reply is String) {
+          setState(() {
+            _heard = heard;
+            _reply = reply;
+            _history.insert(0, _Exchange(heard, reply));
+            if (_history.length > 30) _history.removeLast();
+          });
+        }
+      case 'partial':
+        final text = data['text'];
+        if (text is String) setState(() => _heard = text);
+      case 'micDenied':
+        // The background isolate found the mic permanently denied —
+        // it cannot fix that by retrying. Tell the user (when the
+        // app is open) to allow it in Settings.
+        if (_assistantOn) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'Microphone permission blocked hai — Settings se Allow karo, warna Ayra sun nahi sakti.',
+              ),
+            ),
+          );
+        }
+      case 'diagnostic':
+        // Loop state from the background isolate — show it in the
+        // assistant card so the user sees what the loop is doing.
+        final text = data['text'];
+        if (text is String) setState(() => _loopState = text);
+    }
+  }
+
+  void _startHeartbeat() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      BackgroundAssistantService.sendToTask({'type': 'heartbeat'});
+    });
+    BackgroundAssistantService.sendToTask({'type': 'heartbeat'});
+  }
+
+  void _stopHeartbeat() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
+  }
+
+  /// Restores the assistant after the app is reopened: if the switch
+  /// was ON, the service comes back — the background isolate restarts
+  /// the trigger loop itself from the saved locale.
+  Future<void> _initAssistant() async {
+    if (!await _assistant.isOn()) return;
+    if (!Platform.isAndroid) return;
+    if (!await _assistant.isServiceRunning) {
+      final result = await _assistant.start();
+      if (!result.isOk) {
+        // Service could not start — fall back to OFF.
+        await _assistant.stop();
+        return;
+      }
+    }
+    if (!mounted) return;
+    setState(() => _assistantOn = true);
+    _startHeartbeat();
+    _overlayGranted = await _assistant.showOverlay();
+    _overlayRestricted =
+        !_overlayGranted && await _assistant.isOverlayRestricted;
+    if (mounted) setState(() {});
+  }
+
+  /// Runs when the app comes back to the foreground — for example after
+  /// the user tapped the floating mic button over another app.
+  Future<void> _onAppResumed() async {
+    if (!mounted) return;
+    if (!Platform.isAndroid) return;
+    // The background isolate may have saved notes/memories while the
+    // UI was away — refresh them.
+    await _loadSaved();
+    // Battery exemption is only known after the user comes back from
+    // the settings screen — check it now, not when ON was tapped.
+    if (_assistantOn) {
+      final exempt =
+          await FlutterForegroundTask.isIgnoringBatteryOptimizations;
+      if (mounted && exempt != _batteryWarning) {
+        setState(() => _batteryWarning = !exempt);
+      }
+    }
+    final tapped = await _assistant.consumeOverlayTap();
+    if (tapped && _assistantOn) {
+      BackgroundAssistantService.sendToTask({'type': 'restartLoop'});
+      if (!mounted) return;
+      setState(() {
+        _reply = 'Listening — say "Hello Ayra" and then your command.';
+      });
+      return;
+    }
+    // The system killed the service while Ayra was away but the switch
+    // is ON — bring it back.
+    if (_assistantOn && !await _assistant.isServiceRunning) {
+      final result = await _assistant.start();
+      if (result.isOk) _startHeartbeat();
+    }
+  }
+
+  /// The big ON/OFF switch for the background assistant.
+  Future<void> _toggleAssistant() async {
+    if (_assistantBusy) return;
+    if (_assistantOn) {
+      // OFF: stop everything. Ayra does absolutely nothing now.
+      setState(() => _assistantBusy = true);
+      _stopHeartbeat();
+      await _assistant.stop();
+      if (mounted) {
+        setState(() {
+          _assistantOn = false;
+          _assistantBusy = false;
+          _overlayGranted = false;
+          _overlayRestricted = false;
+          _batteryWarning = false;
+          _loopState = '';
+        });
+      }
+      return;
+    }
+    // ON: service + trigger loop (in the background isolate) +
+    // floating mic button.
+    //
+    // Fresh-install checklist (uninstall → install → tap ON first
+    // thing, before touching the orb): the service must start and
+    // the notification must appear. That failed before this fix
+    // because ON never asked for the microphone and it launched the
+    // battery settings screen before starting the service.
+    // Order matters here — do not reorder:
+    //   1. Microphone permission, in the UI isolate. Android 14+
+    //      refuses a microphone foreground service without
+    //      RECORD_AUDIO, and no permission dialog can be shown from
+    //      the background isolate. Never call start() without it.
+    //   2. Notification permission (Android 13+).
+    //   3. Start the service WHILE the app is in the foreground.
+    //      Starting after the battery settings screen (which
+    //      backgrounds the app) fails on Android 12+
+    //      (ForegroundServiceStartNotAllowedException).
+    //   4. Battery exemption AFTER the service is running — the
+    //      settings screen backgrounds the app, which is fine now.
+    //   5. Floating mic button (overlay) last.
+    setState(() => _assistantBusy = true);
+    if (Platform.isAndroid) {
+      var gate = micGateDecision(await Permission.microphone.status);
+      if (gate == MicGate.request) {
+        gate = micGateDecision(await Permission.microphone.request());
+      }
+      if (gate != MicGate.proceed) {
+        if (mounted) {
+          setState(() => _assistantBusy = false);
+          final toSettings = gate == MicGate.openSettings;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                toSettings
+                    ? 'Microphone permission blocked hai — Settings se Allow karo, phir ON dabao.'
+                    : 'Microphone permission chahiye — Allow karo, phir ON dabao.',
+              ),
+              action: toSettings
+                  ? SnackBarAction(
+                      label: 'Settings',
+                      onPressed: () => openAppSettings(),
+                    )
+                  : null,
+            ),
+          );
+        }
+        return;
+      }
+      // Notification permission (Android 13+). Non-blocking if denied —
+      // the service notification still shows.
+      final notificationStatus = await Permission.notification.status;
+      if (notificationStatus.isDenied) {
+        await Permission.notification.request();
+      }
+    }
+    final result = await _assistant.start();
+    if (!result.isOk) {
+      if (mounted) {
+        setState(() => _assistantBusy = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(_startFailureMessage(result.failure!)),
+          ),
+        );
+      }
+      return;
+    }
+    // Battery optimisation: ask now that the service is running, so
+    // the phone does not kill Ayra while it listens in the
+    // background. Whether the user allowed it is checked when the
+    // app resumes (see _onAppResumed).
+    if (Platform.isAndroid &&
+        !await FlutterForegroundTask.isIgnoringBatteryOptimizations) {
+      await _device.requestBatteryExemption();
+    }
+    // The background isolate restores the listen locale from storage.
+    await _assistant.saveLoopLocale(_listenUrdu ? 'ur-PK' : 'en-US');
+    _startHeartbeat();
+    _overlayGranted = await _assistant.showOverlay();
+    _overlayRestricted =
+        !_overlayGranted && await _assistant.isOverlayRestricted;
+    if (!mounted) return;
+    setState(() {
+      _assistantOn = true;
+      _assistantBusy = false;
+    });
+    if (!_overlayGranted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            _overlayRestricted
+                ? 'Floating button ke liye pehle restricted settings allow karni hongi — Assistant card mein steps hain.'
+                : 'Floating mic button needs "Draw over other apps" — allow it from the Assistant card below.',
+          ),
+        ),
+      );
+    }
+  }
+
+  /// The message for a failed service start, matched to the reason
+  /// so the user knows what to do instead of one generic error.
+  String _startFailureMessage(AssistantStartFailure failure) {
+    return switch (failure) {
+      AssistantStartFailure.microphoneDenied =>
+        'Microphone permission chahiye — Allow karo, phir ON dabao.',
+      AssistantStartFailure.backgroundStart =>
+        'Service start nahi hua — app background mein thi. Dobara ON dabao.',
+      AssistantStartFailure.timeout =>
+        'Service start hone mein time lag raha hai — dobara try karo.',
+      AssistantStartFailure.alreadyRunning =>
+        'Assistant pehle se chal rahi hai.',
+      AssistantStartFailure.unknown =>
+        'Could not start the background service. Try again.',
+    };
   }
 
   Future<void> _loadSaved() async {
     final saved = await _store.load();
+    final prefs = await SharedPreferences.getInstance();
+    final urdu = prefs.getBool(_languageKey) ?? true;
+    final rate = prefs.getDouble(VoiceService.ttsRateKey) ??
+        VoiceService.defaultSpeechRate;
+    if (!mounted) return;
     setState(() {
       _engine.notes.addAll(saved.notes);
       _engine.memories.addAll(saved.memories);
+      _listenUrdu = urdu;
+      _ttsSlow = rate <= 0.6;
     });
+    await _voice.setSpeechRate(rate);
   }
 
   Future<void> _save() async {
@@ -121,6 +427,9 @@ class _HomePageState extends State<HomePage> {
 
   @override
   void dispose() {
+    _lifecycleListener?.dispose();
+    _stopHeartbeat();
+    FlutterForegroundTask.removeTaskDataCallback(_onTaskData);
     _timer?.cancel();
     _inputController.dispose();
     _scrollController.dispose();
@@ -128,6 +437,16 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _toggleListening() async {
+    if (_assistantOn) {
+      // The trigger loop lives in the background isolate — the orb
+      // just asks it for a fresh listen window.
+      BackgroundAssistantService.sendToTask({'type': 'restartLoop'});
+      if (!mounted) return;
+      setState(() {
+        _reply = 'Listening — say "Hello Ayra" and then your command.';
+      });
+      return;
+    }
     if (_listening) {
       await _voice.stopListening();
       setState(() {
@@ -193,7 +512,18 @@ class _HomePageState extends State<HomePage> {
         break;
       case CommandAction.openApp:
         final ok = await _device.openAppByName(result.data ?? '');
-        if (!ok) reply = 'Could not find or open that app on this device.';
+        if (!ok) {
+          // App not installed — open its website instead, when the
+          // engine knows one ("WhatsApp kholo" → web.whatsapp.com).
+          if (result.fallbackUrl != null) {
+            final opened = await _device.openUrl(result.fallbackUrl!);
+            reply = opened
+                ? 'That app is not installed — opening the website instead.'
+                : 'Could not find or open that app on this device.';
+          } else {
+            reply = 'Could not find or open that app on this device.';
+          }
+        }
         break;
       case CommandAction.openCamera:
         final ok = await _device.openCamera();
@@ -331,7 +661,16 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    return PopScope(
+      // While the assistant is ON, the back button minimises the app
+      // instead of closing it — the service and listening keep running.
+      canPop: !_assistantOn,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop && _assistantOn) {
+          FlutterForegroundTask.minimizeApp();
+        }
+      },
+      child: Scaffold(
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
@@ -374,7 +713,11 @@ class _HomePageState extends State<HomePage> {
             children: [
               _buildHero(),
               const SizedBox(height: 8),
+              _buildAssistantToggle(),
+              const SizedBox(height: 8),
               _buildLanguageToggle(),
+              const SizedBox(height: 8),
+              _buildSpeedToggle(),
               const SizedBox(height: 16),
               TiltCard(child: _buildReplyCard()),
               const SizedBox(height: 16),
@@ -395,7 +738,7 @@ class _HomePageState extends State<HomePage> {
               ],
               const SizedBox(height: 20),
               const Text(
-                'Honest limits: Ayra cannot unlock a phone, send WhatsApp messages by itself, or run with the app closed. Free-form AI chat needs a cloud key later — today it works with on-device voice and rules only.',
+                'Assistant ON ho to Ayra background mein "Hello Ayra" sunti rehti hai — band karne ke liye OFF dabao. Sach: Ayra phone unlock nahi kar sakti, WhatsApp message khud nahi bhej sakti, aur doosri app band nahi kar sakti. Background mein sunna phone par depend karta hai (kuch phone screen off par mic rok dete hain) aur battery zyada use hoti hai.',
                 style: TextStyle(fontSize: 11, color: Colors.white38),
                 textAlign: TextAlign.center,
               ),
@@ -403,6 +746,7 @@ class _HomePageState extends State<HomePage> {
           ),
         ),
       ),
+    ),
     );
   }
 
@@ -416,10 +760,175 @@ class _HomePageState extends State<HomePage> {
         children: [
           const Globe3D(size: 260),
           Orb3D(
-            listening: _listening,
+            listening: _listening || _assistantOn,
             onTap: _toggleListening,
           ),
         ],
+      ),
+    );
+  }
+
+  /// The big ON/OFF switch for the background assistant.
+  Widget _buildAssistantToggle() {
+    final on = _assistantOn;
+    return TiltCard(
+      child: Card(
+        child: Padding(
+          padding: const EdgeInsets.all(18),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      gradient: LinearGradient(
+                        colors: on
+                            ? const [Color(0xFF22C55E), Color(0xFF3B82F6)]
+                            : const [Color(0xFF475569), Color(0xFF1E293B)],
+                      ),
+                    ),
+                    child: Icon(
+                      on ? Icons.hearing : Icons.power_settings_new,
+                      color: Colors.white,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Ayra Assistant',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w700,
+                            fontSize: 16,
+                          ),
+                        ),
+                        Text(
+                          'Background mode',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.white60,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Chip(
+                    label: Text(on ? 'ON' : 'OFF'),
+                    backgroundColor:
+                        on ? const Color(0xFF14532D) : const Color(0xFF1E2547),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Text(
+                on
+                    ? 'ON hai — background mein "Hello Ayra" sun rahi hai. App ko recents se swipe karke band mat karo — Back dabao ya doosri app kholo, phir bhi chalegi.'
+                    : 'Band hai — Ayra kuch nahi kar rahi. ON karo to background mein "Hello Ayra" sunegi.',
+                style: const TextStyle(fontSize: 13, color: Colors.white70),
+              ),
+              if (on && _loopState.isNotEmpty) ...[
+                const SizedBox(height: 10),
+                Text(
+                  'Loop: $_loopState',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: Color(0xFF93C5FD),
+                  ),
+                ),
+              ],
+              if (on) ...[
+                const SizedBox(height: 10),
+                OutlinedButton.icon(
+                  onPressed: _showDiagnostics,
+                  icon: const Icon(Icons.bug_report_outlined, size: 18),
+                  label: const Text('Diagnostics share karo'),
+                ),
+              ],
+              if (on && _batteryWarning) ...[
+                const SizedBox(height: 10),
+                const Text(
+                  'Battery optimisation abhi bhi ON hai — phone Ayra ko background mein band kar sakta hai. Settings → Apps → Ayra → Battery → "Unrestricted" karo.',
+                  style: TextStyle(fontSize: 12, color: Color(0xFFFBBF24)),
+                ),
+              ],
+              if (on) ...[
+                const SizedBox(height: 10),
+                const Text(
+                  'Samsung / Xiaomi / Oppo / Vivo par: Settings → Apps → Ayra → Battery mein "Allow background activity" bhi on rakho, warna phone service rok deta hai.',
+                  style: TextStyle(fontSize: 12, color: Colors.white60),
+                ),
+              ],
+              const SizedBox(height: 14),
+              FilledButton.icon(
+                onPressed: _assistantBusy ? null : _toggleAssistant,
+                icon: Icon(
+                  on ? Icons.power_settings_new : Icons.play_arrow,
+                ),
+                label: Text(
+                  _assistantBusy
+                      ? 'Please wait…'
+                      : on
+                          ? 'Ayra Assistant OFF'
+                          : 'Ayra Assistant ON',
+                ),
+                style: FilledButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  backgroundColor:
+                      on ? const Color(0xFFDC2626) : const Color(0xFF3B82F6),
+                ),
+              ),
+              if (on && !_overlayGranted) ...[
+                const SizedBox(height: 10),
+                if (_overlayRestricted) ...[
+                  // Android restricted settings (sideloaded APK, Android
+                  // 13+): the "Display over other apps" toggle is
+                  // disabled until restricted settings are allowed in
+                  // App info. The overlay is only the floating button —
+                  // background listening works without it.
+                  const Text(
+                    'Floating button band hai — phone ne restricted settings laga rakhi hain (APK se install hua hai). Steps:\n1. "App info kholo" dabao\n2. Upar 3-dot menu → "Allow restricted settings" on karo\n3. Wapas aakar "Draw over other apps" allow karo\nBackground sunna bina button ke bhi chalega — button sirf shortcut hai.',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Color(0xFFFBBF24),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  OutlinedButton.icon(
+                    onPressed: () => _assistant.openAppInfoSettings(),
+                    icon: const Icon(Icons.open_in_new, size: 18),
+                    label: const Text('App info kholo'),
+                  ),
+                ] else ...[
+                  OutlinedButton.icon(
+                    onPressed: () => _assistant.openOverlaySettings(),
+                    icon: const Icon(Icons.open_in_new, size: 18),
+                    label: const Text(
+                      'Floating mic button allow karo',
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  const Text(
+                    'Floating mic button ke liye "Draw over other apps" ki permission chahiye.',
+                    style: TextStyle(fontSize: 12, color: Colors.white60),
+                  ),
+                ],
+              ],
+              if (on && _overlayGranted) ...[
+                const SizedBox(height: 10),
+                const Text(
+                  'Floating mic button kisi bhi app ke upar dikhega — dabao to Ayra khul jayegi.',
+                  style: TextStyle(fontSize: 12, color: Colors.white60),
+                ),
+              ],
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -431,15 +940,113 @@ class _HomePageState extends State<HomePage> {
         ChoiceChip(
           label: const Text('English'),
           selected: !_listenUrdu,
-          onSelected: (_) => setState(() => _listenUrdu = false),
+          onSelected: (_) => _setLanguage(false),
         ),
         const SizedBox(width: 8),
         ChoiceChip(
           label: const Text('اردو'),
           selected: _listenUrdu,
-          onSelected: (_) => setState(() => _listenUrdu = true),
+          onSelected: (_) => _setLanguage(true),
         ),
       ],
+    );
+  }
+
+  /// Speaking speed: Slow (0.55, the default — calm and clear) or
+  /// Normal (0.7). Saved, so it survives a restart and the
+  /// background isolate uses the same speed.
+  Widget _buildSpeedToggle() {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        const Text(
+          'Bolaney ki speed:',
+          style: TextStyle(fontSize: 13, color: Colors.white70),
+        ),
+        const SizedBox(width: 8),
+        ChoiceChip(
+          label: const Text('Slow'),
+          selected: _ttsSlow,
+          onSelected: (_) => _setTtsSpeed(true),
+        ),
+        const SizedBox(width: 8),
+        ChoiceChip(
+          label: const Text('Normal'),
+          selected: !_ttsSlow,
+          onSelected: (_) => _setTtsSpeed(false),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _setLanguage(bool urdu) async {
+    setState(() => _listenUrdu = urdu);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_languageKey, urdu);
+    // The trigger loop lives in the background isolate — save the new
+    // language and tell it to restart listening with it.
+    if (_assistantOn) {
+      final locale = urdu ? 'ur-PK' : 'en-US';
+      await _assistant.saveLoopLocale(locale);
+      BackgroundAssistantService.sendToTask(
+        {'type': 'locale', 'localeId': locale},
+      );
+    }
+  }
+
+  /// Speaking speed: Slow (0.55, the default) or Normal (0.7). The
+  /// choice is saved and also sent to the background isolate, which
+  /// has its own TTS engine.
+  Future<void> _setTtsSpeed(bool slow) async {
+    final rate = slow
+        ? VoiceService.defaultSpeechRate
+        : VoiceService.normalSpeechRate;
+    setState(() => _ttsSlow = slow);
+    await _voice.setSpeechRate(rate);
+    if (_assistantOn) {
+      BackgroundAssistantService.sendToTask(
+        {'type': 'ttsRate', 'rate': rate},
+      );
+    }
+  }
+
+  /// Shows the background loop's debug log so the user can copy it
+  /// and send it when something does not work — the loop's paper
+  /// trail (state changes, errors, last heard words).
+  Future<void> _showDiagnostics() async {
+    final log = await DiagnosticsLog.readTail(maxLines: 100);
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Diagnostics'),
+        content: SingleChildScrollView(
+          child: SelectableText(
+            log.isEmpty ? 'Abhi koi log nahi hai.' : log,
+            style: const TextStyle(fontSize: 12),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Close'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(text: log));
+              if (context.mounted) {
+                Navigator.of(context).pop();
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Diagnostics copy ho gaye.'),
+                  ),
+                );
+              }
+            },
+            child: const Text('Copy'),
+          ),
+        ],
+      ),
     );
   }
 
@@ -535,7 +1142,7 @@ class _HomePageState extends State<HomePage> {
             controller: _inputController,
             textInputAction: TextInputAction.send,
             decoration: const InputDecoration(
-              hintText: 'Type a command… e.g. calculate 15 * 4',
+              hintText: 'Command likho… jaise "12 + 8 calculate karo"',
               contentPadding: EdgeInsets.symmetric(
                 horizontal: 18,
                 vertical: 14,
