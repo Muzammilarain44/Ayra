@@ -78,7 +78,61 @@ class DeviceService {
     }
   }
 
-  /// Opens the camera app. Android only.
+  /// Opens an installed app by name from the background isolate, where
+  /// the hand-written 'ayra/apps' channel (MainActivity) is not
+  /// registered — only the main isolate's engine has it. Uses a small
+  /// well-known package map (mirroring MainActivity) plus an explicit
+  /// package name, launched with FLAG_ACTIVITY_NEW_TASK, which a
+  /// background context requires. Returns false for unknown apps.
+  Future<bool> openAppFromBackground(String query) async {
+    if (!Platform.isAndroid) return false;
+    final q = query.trim().toLowerCase();
+    if (q.length < 3 || q == 'app') return false;
+    const packages = {
+      'chrome': 'com.android.chrome',
+      'whatsapp': 'com.whatsapp',
+      'facebook': 'com.facebook.katana',
+      'instagram': 'com.instagram.android',
+      'spotify': 'com.spotify.music',
+      'gmail': 'com.google.android.gm',
+      'maps': 'com.google.android.apps.maps',
+      'youtube': 'com.google.android.youtube',
+      'telegram': 'org.telegram.messenger',
+      'tiktok': 'com.zhiliaoapp.musically',
+      'play store': 'com.android.vending',
+      'playstore': 'com.android.vending',
+      'files': 'com.google.android.apps.nbu.files',
+      'calculator': 'com.google.android.calculator',
+      'clock': 'com.google.android.deskclock',
+      'gallery': 'com.google.android.apps.photos',
+      'photos': 'com.google.android.apps.photos',
+      'settings': 'com.android.settings',
+    };
+    String? package;
+    for (final entry in packages.entries) {
+      if (q.contains(entry.key) || (q.length >= 4 && entry.key.contains(q))) {
+        package = entry.value;
+        break;
+      }
+    }
+    // A literal package name ("com.whatsapp") works as-is.
+    package ??= q.contains('.') ? q : null;
+    if (package == null) return false;
+    try {
+      // FLAG_ACTIVITY_NEW_TASK = 0x10000000: required when starting an
+      // activity from outside an Activity (the background isolate).
+      final launch = AndroidIntent(
+        action: 'android.intent.action.MAIN',
+        category: 'android.intent.category.LAUNCHER',
+        package: package,
+        flags: const <int>[268435456],
+      );
+      await launch.launch();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
   Future<bool> openCamera() async {
     if (!Platform.isAndroid) return false;
     try {
@@ -121,6 +175,24 @@ class DeviceService {
     };
     try {
       final intent = AndroidIntent(action: action);
+      await intent.launch();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Opens the system dialog that asks the user to let Ayra ignore
+  /// battery optimisations. Android only. The background assistant
+  /// needs this so the phone does not kill it while it listens for
+  /// "Hello Ayra". Returns false when the settings screen cannot open.
+  Future<bool> requestBatteryExemption() async {
+    if (!Platform.isAndroid) return false;
+    try {
+      const intent = AndroidIntent(
+        action: 'android.settings.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS',
+        data: 'package:com.muzammilarain44.ayra.ayra',
+      );
       await intent.launch();
       return true;
     } catch (_) {
