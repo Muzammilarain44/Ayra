@@ -26,6 +26,9 @@ dependencies:
   permission_handler: ^12.0.0
   android_intent_plus: ^6.1.0
   volume_controller: ^3.7.1
+  flutter_foreground_task: ^11.0.3
+  # App documents directory for the rotating diagnostics log.
+  path_provider: ^2.1.0
 
 dev_dependencies:
   flutter_test:

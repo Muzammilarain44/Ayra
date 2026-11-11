@@ -143,3 +143,21 @@ bhej sakti (WhatsApp khol deti hai, tum bhejo),
 app band ho to background mein nahi chalti. Free-form AI chat abhi nahi — us
 ke liye cloud key chahiye hogi; jab free key milegi to sirf
 `lib/ai_service.dart` mein lagayenge.
+
+---
+
+## Fresh-install checklist (background service)
+
+Fresh install par pehli dafa ON dabane se service start honi chahiye —
+pehle ye fail hoti thi, is liye ye checklist hai. Test karne se pehle
+purana app uninstall karo, phir naya APK install karo:
+
+1. App kholo, orb ko haath mat lagao — seedha **Ayra Assistant ON** dabao.
+2. Microphone ki permission aani chahiye — **Allow** karo. (ON tab tak
+   start nahi hota jab tak mic allow na ho; Android 14+ mic ke baghair
+   microphone-type foreground service start hi nahi hone deta.)
+3. Service start honi chahiye aur **"Ayra chal rahi hai"** notification
+   aani chahiye — us ke BAAD battery exemption ki screen aati hai.
+4. Agar mic **permanently denied** ho to ON dabane par Settings ka
+   button milta hai — Settings → Permissions → Microphone → Allow karo.
+5. Khaamoshi mein loop khud band nahi hota; sirf OFF dabane se band hota hai.
