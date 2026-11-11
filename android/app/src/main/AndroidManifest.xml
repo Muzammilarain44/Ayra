@@ -8,11 +8,29 @@
     <uses-permission android:name="android.permission.FLASHLIGHT" />
     <!-- List installed apps so Ayra can open them by name ("Chrome kholo"). -->
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+    <!-- Background assistant (ON/OFF): foreground service keeps Ayra
+         alive in the background; microphone type lets the recogniser
+         keep listening for "Hello Ayra" while other apps are open. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <!-- Floating mic button over other apps. -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- Ask the user to exempt Ayra from battery optimisation. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- (flutter_foreground_task already declares FOREGROUND_SERVICE,
+         WAKE_LOCK, RECEIVE_BOOT_COMPLETED and POST_NOTIFICATIONS.) -->
     <uses-feature android:name="android.hardware.camera.flash" android:required="false" />
     <application
         android:label="ayra"
-        android:name="${applicationName}"
+        android:name=".AyraApplication"
         android:icon="@mipmap/ic_launcher">
+        <!-- Foreground service for the background assistant. Do not
+             change the service name (required by flutter_foreground_task).
+             stopWithTask is NOT set, so swiping the app away from recents
+             does not stop it — only the OFF button does. -->
+        <service
+            android:name="com.pravera.flutter_foreground_task.service.ForegroundService"
+            android:foregroundServiceType="microphone"
+            android:exported="false" />
         <activity
             android:name=".MainActivity"
             android:exported="true"
